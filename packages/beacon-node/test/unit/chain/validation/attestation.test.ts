@@ -3,8 +3,7 @@ import type {PublicKey, SecretKey} from "@chainsafe/bls/types";
 import bls from "@chainsafe/bls";
 import {describe, it, expect, beforeEach, afterEach, vi} from "vitest";
 import {ForkName, SLOTS_PER_EPOCH} from "@lodestar/params";
-import {EpochDifference, ProtoBlock} from "@lodestar/fork-choice";
-import {EpochShuffling, SignatureSetType, computeStartSlotAtEpoch} from "@lodestar/state-transition";
+import {SignatureSetType} from "@lodestar/state-transition";
 import {ssz} from "@lodestar/types";
 // eslint-disable-next-line import/no-relative-packages
 import {generateTestCachedBeaconStateOnlyValidators} from "../../../../../state-transition/test/perf/util.js";
@@ -22,18 +21,14 @@ import {
   Step0Result,
   validateAttestation,
   validateGossipAttestationsSameAttData,
-  getShufflingForAttestationVerification,
 } from "../../../../src/chain/validation/index.js";
 import {expectRejectedWithLodestarError} from "../../../utils/errors.js";
 import {memoOnce} from "../../../utils/cache.js";
 import {getAttestationValidData, AttestationValidDataOpts} from "../../../utils/validationData/attestation.js";
-import {RegenCaller} from "../../../../src/chain/regen/interface.js";
-import {ZERO_HASH_HEX} from "../../../../src/constants/constants.js";
 
 import {BlsSingleThreadVerifier} from "../../../../src/chain/bls/singleThread.js";
 import {SeenAttesters} from "../../../../src/chain/seenCache/seenAttesters.js";
 import {getAttDataBase64FromAttestationSerialized} from "../../../../src/util/sszBytes.js";
-import {MockedBeaconChain, getMockedBeaconChain} from "../../../__mocks__/mockedBeaconChain.js";
 
 describe("validateGossipAttestationsSameAttData", () => {
   // phase0Result specifies whether the attestation is valid in phase0
@@ -447,145 +442,4 @@ describe("validateAttestation", () => {
     const fork = chain.config.getForkName(stateSlot);
     await expectRejectedWithLodestarError(validateAttestation(fork, chain, attestationOrBytes, subnet), errorCode);
   }
-});
-
-describe.skip("getShufflingForAttestationVerification", () => {
-  let regenStub: MockedBeaconChain["regen"];
-  let forkchoiceStub: MockedBeaconChain["forkChoice"];
-  let shufflingCacheStub: MockedBeaconChain["shufflingCache"];
-  let chain: MockedBeaconChain;
-
-  beforeEach(() => {
-    chain = getMockedBeaconChain();
-    regenStub = chain.regen;
-    forkchoiceStub = chain.forkChoice;
-    shufflingCacheStub = chain.shufflingCache;
-    vi.spyOn(regenStub, "getBlockSlotState");
-    vi.spyOn(regenStub, "getState");
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  const attEpoch = 1000;
-  const blockRoot = "0xd76aed834b4feef32efb53f9076e407c0d344cfdb70f0a770fa88416f70d304d";
-
-  it("block epoch is the same to attestation epoch", async () => {
-    const headSlot = computeStartSlotAtEpoch(attEpoch);
-    const attHeadBlock = {
-      slot: headSlot,
-      stateRoot: ZERO_HASH_HEX,
-      blockRoot,
-    } as Partial<ProtoBlock> as ProtoBlock;
-    const previousDependentRoot = "0xa916b57729dbfb89a082820e0eb2b669d9d511a675d3d8c888b2f300f10b0bdf";
-    forkchoiceStub.getDependentRoot.mockImplementationOnce((block, epochDiff) => {
-      if (block === attHeadBlock && epochDiff === EpochDifference.previous) {
-        return previousDependentRoot;
-      } else {
-        throw new Error("Unexpected input");
-      }
-    });
-    const expectedShuffling = {epoch: attEpoch} as EpochShuffling;
-    shufflingCacheStub.get.mockImplementationOnce((epoch, root) => {
-      if (epoch === attEpoch && root === previousDependentRoot) {
-        return Promise.resolve(expectedShuffling);
-      } else {
-        return Promise.resolve(null);
-      }
-    });
-    const resultShuffling = await getShufflingForAttestationVerification(
-      chain,
-      attEpoch,
-      attHeadBlock,
-      RegenCaller.validateGossipAttestation
-    );
-    expect(resultShuffling).to.be.deep.equal(expectedShuffling);
-  });
-
-  it("block epoch is previous attestation epoch", async () => {
-    const headSlot = computeStartSlotAtEpoch(attEpoch - 1);
-    const attHeadBlock = {
-      slot: headSlot,
-      stateRoot: ZERO_HASH_HEX,
-      blockRoot,
-    } as Partial<ProtoBlock> as ProtoBlock;
-    const currentDependentRoot = "0xa916b57729dbfb89a082820e0eb2b669d9d511a675d3d8c888b2f300f10b0bdf";
-    forkchoiceStub.getDependentRoot.mockImplementationOnce((block, epochDiff) => {
-      if (block === attHeadBlock && epochDiff === EpochDifference.current) {
-        return currentDependentRoot;
-      } else {
-        throw new Error("Unexpected input");
-      }
-    });
-    const expectedShuffling = {epoch: attEpoch} as EpochShuffling;
-    shufflingCacheStub.get.mockImplementationOnce((epoch, root) => {
-      if (epoch === attEpoch && root === currentDependentRoot) {
-        return Promise.resolve(expectedShuffling);
-      } else {
-        return Promise.resolve(null);
-      }
-    });
-    const resultShuffling = await getShufflingForAttestationVerification(
-      chain,
-      attEpoch,
-      attHeadBlock,
-      RegenCaller.validateGossipAttestation
-    );
-    expect(resultShuffling).to.be.deep.equal(expectedShuffling);
-  });
-
-  it("block epoch is attestation epoch - 2", async () => {
-    const headSlot = computeStartSlotAtEpoch(attEpoch - 2);
-    const attHeadBlock = {
-      slot: headSlot,
-      stateRoot: ZERO_HASH_HEX,
-      blockRoot,
-    } as Partial<ProtoBlock> as ProtoBlock;
-    const expectedShuffling = {epoch: attEpoch} as EpochShuffling;
-    let callCount = 0;
-    shufflingCacheStub.get.mockImplementationOnce((epoch, root) => {
-      if (epoch === attEpoch && root === blockRoot) {
-        if (callCount === 0) {
-          callCount++;
-          return Promise.resolve(null);
-        } else {
-          return Promise.resolve(expectedShuffling);
-        }
-      } else {
-        return Promise.resolve(null);
-      }
-    });
-    chain.regenStateForAttestationVerification.mockImplementationOnce(() => Promise.resolve(expectedShuffling));
-
-    const resultShuffling = await getShufflingForAttestationVerification(
-      chain,
-      attEpoch,
-      attHeadBlock,
-      RegenCaller.validateGossipAttestation
-    );
-    // sandbox.assert.notCalled(forkchoiceStub.getDependentRoot);
-    expect(forkchoiceStub.getDependentRoot).not.toHaveBeenCalledTimes(1);
-    expect(resultShuffling).to.be.deep.equal(expectedShuffling);
-  });
-
-  it("block epoch is attestation epoch + 1", async () => {
-    const headSlot = computeStartSlotAtEpoch(attEpoch + 1);
-    const attHeadBlock = {
-      slot: headSlot,
-      stateRoot: ZERO_HASH_HEX,
-      blockRoot,
-    } as Partial<ProtoBlock> as ProtoBlock;
-    try {
-      await getShufflingForAttestationVerification(
-        chain,
-        attEpoch,
-        attHeadBlock,
-        RegenCaller.validateGossipAttestation
-      );
-      expect.fail("Expect error because attestation epoch is greater than block epoch");
-    } catch (e) {
-      expect(e instanceof Error).to.be.true;
-    }
-  });
 });
