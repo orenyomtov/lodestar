@@ -3,6 +3,7 @@ import {allForks, UintNum64, Root, phase0, Slot, RootHex, Epoch, ValidatorIndex,
 import {
   BeaconStateAllForks,
   CachedBeaconStateAllForks,
+  EpochShuffling,
   Index2PubkeyCache,
   PubkeyIndexMap,
 } from "@lodestar/state-transition";
@@ -36,6 +37,7 @@ import {CheckpointBalancesCache} from "./balancesCache.js";
 import {IChainOptions} from "./options.js";
 import {AssembledBlockType, BlockAttributes, BlockType} from "./produceBlock/produceBlockBody.js";
 import {SeenAttestationDatas} from "./seenCache/seenAttestationData.js";
+import {ShufflingCache} from "./shufflingCache.js";
 
 export {BlockType, type AssembledBlockType};
 export {type ProposerPreparationData};
@@ -93,6 +95,7 @@ export interface IBeaconChain {
 
   readonly beaconProposerCache: BeaconProposerCache;
   readonly checkpointBalancesCache: CheckpointBalancesCache;
+  readonly shufflingCache: ShufflingCache;
   readonly producedBlobSidecarsCache: Map<BlockHash, {blobSidecars: deneb.BlobSidecars; slot: Slot}>;
   readonly producedBlindedBlobSidecarsCache: Map<BlockHash, {blobSidecars: deneb.BlindedBlobSidecars; slot: Slot}>;
   readonly producedBlockRoot: Set<RootHex>;
@@ -158,6 +161,12 @@ export interface IBeaconChain {
   persistInvalidSszBytes(type: string, sszBytes: Uint8Array, suffix?: string): void;
   /** Persist bad items to persistInvalidSszObjectsDir dir, for example invalid state, attestations etc. */
   persistInvalidSszView(view: TreeView<CompositeTypeAny>, suffix?: string): void;
+  regenStateForAttestationVerification(
+    attEpoch: Epoch,
+    shufflingDependentRoot: RootHex,
+    attHeadBlock: ProtoBlock,
+    regenCaller: RegenCaller
+  ): Promise<EpochShuffling>;
   updateBuilderStatus(clockSlot: Slot): void;
 
   regenCanAcceptWork(): boolean;
