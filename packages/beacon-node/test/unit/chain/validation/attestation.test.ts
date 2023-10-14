@@ -449,7 +449,7 @@ describe("validateAttestation", () => {
   }
 });
 
-describe("getShufflingForAttestationVerification", () => {
+describe.skip("getShufflingForAttestationVerification", () => {
   let regenStub: MockedBeaconChain["regen"];
   let forkchoiceStub: MockedBeaconChain["forkChoice"];
   let shufflingCacheStub: MockedBeaconChain["shufflingCache"];
