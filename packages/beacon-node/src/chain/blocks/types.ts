@@ -9,6 +9,7 @@ import {pruneSetToMax} from "@lodestar/utils";
 export enum BlockInputType {
   preDeneb = "preDeneb",
   postDeneb = "postDeneb",
+  blobsPromise = "blobsPromise",
 }
 
 /** Enum to represent where blocks come from */
@@ -19,9 +20,13 @@ export enum BlockSource {
   byRoot = "req_resp_by_root",
 }
 
+type BlobsCache = Map<number, {blobSidecar: deneb.BlobSidecar; blobBytes: Uint8Array | null}>;
+type BlockInputBlobs = {blobs: deneb.BlobSidecars; blobsBytes: (Uint8Array | null)[]};
+
 export type BlockInput = {block: allForks.SignedBeaconBlock; source: BlockSource; blockBytes: Uint8Array | null} & (
   | {type: BlockInputType.preDeneb}
-  | {type: BlockInputType.postDeneb; blobs: deneb.BlobSidecars; blobsBytes: (Uint8Array | null)[]}
+  | ({type: BlockInputType.postDeneb} & BlockInputBlobs)
+  | {type: BlockInputType.blobsPromise; blobsCache: BlobsCache; availabilityPromise: Promise<BlockInputBlobs>}
 );
 
 export function blockRequiresBlobs(config: ChainForkConfig, blockSlot: Slot, clockSlot: Slot): boolean {
@@ -42,8 +47,10 @@ type GossipedBlockInput =
 type BlockInputCacheType = {
   block?: allForks.SignedBeaconBlock;
   blockBytes?: Uint8Array | null;
-  blobs: Map<number, deneb.BlobSidecar>;
-  blobsBytes: Map<number, Uint8Array | null>;
+  blobsCache: BlobsCache;
+  // promise and its callback cached for delayed resolution
+  availabilityPromise: Promise<BlockInputBlobs>;
+  resolveAvailability: (blobs: BlockInputBlobs) => void;
 };
 
 const MAX_GOSSIPINPUT_CACHE = 5;
@@ -57,9 +64,11 @@ export const getBlockInput = {
     config: ChainForkConfig,
     gossipedInput: GossipedBlockInput
   ):
-    | {blockInput: BlockInput; blockInputMeta: {pending: null; haveBlobs: number; expectedBlobs: number}}
-    | {blockInput: null; blockInputMeta: {pending: GossipedInputType.block; haveBlobs: number; expectedBlobs: null}}
-    | {blockInput: null; blockInputMeta: {pending: GossipedInputType.blob; haveBlobs: number; expectedBlobs: number}} {
+    | {
+        blockInput: BlockInput;
+        blockInputMeta: {pending: GossipedInputType.blob | null; haveBlobs: number; expectedBlobs: number};
+      }
+    | {blockInput: null; blockInputMeta: {pending: GossipedInputType.block; haveBlobs: number; expectedBlobs: null}} {
     let blockHex;
     let blockCache;
 
@@ -69,32 +78,25 @@ export const getBlockInput = {
       blockHex = toHexString(
         config.getForkTypes(signedBlock.message.slot).BeaconBlock.hashTreeRoot(signedBlock.message)
       );
-      blockCache = this.blockInputCache.get(blockHex) ?? {
-        blobs: new Map<number, deneb.BlobSidecar>(),
-        blobsBytes: new Map<number, Uint8Array | null>(),
-      };
+      blockCache = this.blockInputCache.get(blockHex) ?? getEmptyBlockInputCacheEntry();
 
       blockCache.block = signedBlock;
       blockCache.blockBytes = blockBytes;
     } else {
       const {signedBlob, blobBytes} = gossipedInput;
       blockHex = toHexString(signedBlob.message.blockRoot);
-      blockCache = this.blockInputCache.get(blockHex);
-
-      // If a new entry is going to be inserted, prune out old ones
-      if (blockCache === undefined) {
-        pruneSetToMax(this.blockInputCache, MAX_GOSSIPINPUT_CACHE);
-        blockCache = {blobs: new Map<number, deneb.BlobSidecar>(), blobsBytes: new Map<number, Uint8Array | null>()};
-      }
+      blockCache = this.blockInputCache.get(blockHex) ?? getEmptyBlockInputCacheEntry();
 
       // TODO: freetheblobs check if its the same blob or a duplicate and throw/take actions
-      blockCache.blobs.set(signedBlob.message.index, signedBlob.message);
-      // easily splice out the unsigned message as blob is a fixed length type
-      blockCache.blobsBytes.set(signedBlob.message.index, blobBytes?.slice(0, BLOBSIDECAR_FIXED_SIZE) ?? null);
+      blockCache.blobsCache.set(signedBlob.message.index, {
+        blobSidecar: signedBlob.message,
+        // easily splice out the unsigned message as blob is a fixed length type
+        blobBytes: blobBytes?.slice(0, BLOBSIDECAR_FIXED_SIZE) ?? null,
+      });
     }
 
     this.blockInputCache.set(blockHex, blockCache);
-    const {block: signedBlock, blockBytes} = blockCache;
+    const {block: signedBlock, blockBytes, blobsCache, availabilityPromise, resolveAvailability} = blockCache;
 
     if (signedBlock !== undefined) {
       // block is available, check if all blobs have shown up
@@ -102,42 +104,40 @@ export const getBlockInput = {
       const {blobKzgCommitments} = body as deneb.BeaconBlockBody;
       const blockInfo = `blockHex=${blockHex}, slot=${slot}`;
 
-      if (blobKzgCommitments.length < blockCache.blobs.size) {
+      if (blobKzgCommitments.length < blobsCache.size) {
         throw Error(
-          `Received more blobs=${blockCache.blobs.size} than commitments=${blobKzgCommitments.length} for ${blockInfo}`
+          `Received more blobs=${blobsCache.size} than commitments=${blobKzgCommitments.length} for ${blockInfo}`
         );
       }
-      if (blobKzgCommitments.length === blockCache.blobs.size) {
-        const blobSidecars = [];
-        const blobsBytes = [];
 
-        for (let index = 0; index < blobKzgCommitments.length; index++) {
-          const blobSidecar = blockCache.blobs.get(index);
-          if (blobSidecar === undefined) {
-            throw Error(`Missing blobSidecar at index=${index} for ${blockInfo}`);
-          }
-          blobSidecars.push(blobSidecar);
-          blobsBytes.push(blockCache.blobsBytes.get(index) ?? null);
-        }
-
+      if (blobKzgCommitments.length === blobsCache.size) {
+        const allBlobs = getBlockInputBlobs(blobsCache);
+        resolveAvailability(allBlobs);
+        const {blobs, blobsBytes} = allBlobs;
         return {
-          // TODO freetheblobs: collate and add serialized data for the postDeneb blockinput
           blockInput: getBlockInput.postDeneb(
             config,
             signedBlock,
             BlockSource.gossip,
-            blobSidecars,
+            blobs,
             blockBytes ?? null,
             blobsBytes
           ),
-          blockInputMeta: {pending: null, haveBlobs: blockCache.blobs.size, expectedBlobs: blobKzgCommitments.length},
+          blockInputMeta: {pending: null, haveBlobs: blobs.length, expectedBlobs: blobKzgCommitments.length},
         };
       } else {
         return {
-          blockInput: null,
+          blockInput: getBlockInput.blobsPromise(
+            config,
+            signedBlock,
+            BlockSource.gossip,
+            blobsCache,
+            blockBytes ?? null,
+            availabilityPromise
+          ),
           blockInputMeta: {
             pending: GossipedInputType.blob,
-            haveBlobs: blockCache.blobs.size,
+            haveBlobs: blobsCache.size,
             expectedBlobs: blobKzgCommitments.length,
           },
         };
@@ -146,7 +146,7 @@ export const getBlockInput = {
       // will need to wait for the block to showup
       return {
         blockInput: null,
-        blockInputMeta: {pending: GossipedInputType.block, haveBlobs: blockCache.blobs.size, expectedBlobs: null},
+        blockInputMeta: {pending: GossipedInputType.block, haveBlobs: blobsCache.size, expectedBlobs: null},
       };
     }
   },
@@ -188,7 +188,58 @@ export const getBlockInput = {
       blobsBytes,
     };
   },
+
+  blobsPromise(
+    config: ChainForkConfig,
+    block: allForks.SignedBeaconBlock,
+    source: BlockSource,
+    blobsCache: BlobsCache,
+    blockBytes: Uint8Array | null,
+    availabilityPromise: Promise<BlockInputBlobs>
+  ): BlockInput {
+    if (config.getForkSeq(block.message.slot) < ForkSeq.deneb) {
+      throw Error(`Pre Deneb block slot ${block.message.slot}`);
+    }
+    return {
+      type: BlockInputType.blobsPromise,
+      block,
+      source,
+      blobsCache,
+      blockBytes,
+      availabilityPromise,
+    };
+  },
 };
+
+function getEmptyBlockInputCacheEntry(): BlockInputCacheType {
+  // Capture both the promise and its callbacks.
+  // It is not spec'ed but in tests in Firefox and NodeJS the promise constructor is run immediately
+  let resolveAvailability: ((blobs: BlockInputBlobs) => void) | null = null;
+  const availabilityPromise = new Promise<BlockInputBlobs>((resolveCB) => {
+    resolveAvailability = resolveCB;
+  });
+  if (resolveAvailability === null) {
+    throw Error("Promise Constructor was not executed immediately");
+  }
+  const blobsCache = new Map();
+  return {availabilityPromise, resolveAvailability, blobsCache};
+}
+
+function getBlockInputBlobs(blobsCache: BlobsCache): BlockInputBlobs {
+  const blobs = [];
+  const blobsBytes = [];
+
+  for (let index = 0; index < blobsCache.size; index++) {
+    const blobCache = blobsCache.get(index);
+    if (blobCache === undefined) {
+      throw Error(`Missing blobSidecar at index=${index}`);
+    }
+    const {blobSidecar, blobBytes} = blobCache;
+    blobs.push(blobSidecar);
+    blobsBytes.push(blobBytes);
+  }
+  return {blobs, blobsBytes};
+}
 
 export enum AttestationImportOpt {
   Skip,

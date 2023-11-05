@@ -21,6 +21,7 @@ import {DENEB_BLOWFISH_BANNER} from "./utils/blowfishBanner.js";
 import {verifyBlocksStateTransitionOnly} from "./verifyBlocksStateTransitionOnly.js";
 import {verifyBlocksSignatures} from "./verifyBlocksSignatures.js";
 import {verifyBlocksExecutionPayload, SegmentExecStatus} from "./verifyBlocksExecutionPayloads.js";
+import {verifyBlocksDataAvailability} from "./verifyBlocksDataAvailability.js";
 import {writeBlockInputToDb} from "./writeBlockInputToDb.js";
 
 /**
@@ -38,12 +39,12 @@ export async function verifyBlocksInEpoch(
   this: BeaconChain,
   parentBlock: ProtoBlock,
   blocksInput: BlockInput[],
-  dataAvailabilityStatuses: DataAvailableStatus[],
   opts: BlockProcessOpts & ImportBlockOpts
 ): Promise<{
   postStates: CachedBeaconStateAllForks[];
   proposerBalanceDeltas: number[];
   segmentExecStatus: SegmentExecStatus;
+  dataAvailabilityStatuses: DataAvailableStatus[];
 }> {
   const blocks = blocksInput.map(({block}) => block);
   if (blocks.length === 0) {
@@ -87,15 +88,18 @@ export async function verifyBlocksInEpoch(
 
   try {
     // batch all I/O operations to reduce overhead
-    const [segmentExecStatus, {postStates, proposerBalanceDeltas}] = await Promise.all([
+    const [segmentExecStatus, dataAvailabilityStatuses, {postStates, proposerBalanceDeltas}] = await Promise.all([
       // Execution payloads
       verifyBlocksExecutionPayload(this, parentBlock, blocks, preState0, abortController.signal, opts),
+      // data Availability
+      verifyBlocksDataAvailability(this,blocksInput,opts),
       // Run state transition only
       // TODO: Ensure it yields to allow flushing to workers and engine API
       verifyBlocksStateTransitionOnly(
         preState0,
         blocksInput,
-        dataAvailabilityStatuses,
+        // hack available for now
+        blocks.map(()=>DataAvailableStatus.available),
         this.logger,
         this.metrics,
         abortController.signal,
@@ -137,7 +141,7 @@ export async function verifyBlocksInEpoch(
       }
     }
 
-    return {postStates, proposerBalanceDeltas, segmentExecStatus};
+    return {postStates, dataAvailabilityStatuses, proposerBalanceDeltas, segmentExecStatus};
   } finally {
     abortController.abort();
   }

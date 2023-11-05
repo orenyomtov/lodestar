@@ -58,7 +58,7 @@ export async function processBlocks(
   }
 
   try {
-    const {relevantBlocks, dataAvailabilityStatuses, parentSlots, parentBlock} = verifyBlocksSanityChecks(
+    const {relevantBlocks, parentSlots, parentBlock} = await verifyBlocksSanityChecks(
       this,
       blocks,
       opts
@@ -72,11 +72,10 @@ export async function processBlocks(
 
     // Fully verify a block to be imported immediately after. Does not produce any side-effects besides adding intermediate
     // states in the state cache through regen.
-    const {postStates, proposerBalanceDeltas, segmentExecStatus} = await verifyBlocksInEpoch.call(
+    const {postStates, dataAvailabilityStatuses, proposerBalanceDeltas, segmentExecStatus} = await verifyBlocksInEpoch.call(
       this,
       parentBlock,
       relevantBlocks,
-      dataAvailabilityStatuses,
       opts
     );
 

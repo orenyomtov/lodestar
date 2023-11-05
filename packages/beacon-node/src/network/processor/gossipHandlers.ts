@@ -254,6 +254,14 @@ function getDefaultHandlers(modules: ValidatorFnsModules, options: GossipHandler
       .catch((e) => {
         if (e instanceof BlockError) {
           switch (e.type.code) {
+            case BlockErrorCode.DATA_UNAVAILABLE:
+              console.log("blobs unavailable, emitting unknown block")
+              // TODO: create a newevent unknownBlobs and only pull blobs
+              const slot = signedBlock.message.slot;
+              const forkTypes = config.getForkTypes(slot);
+              const rootHex = prettyBytes(forkTypes.BeaconBlock.hashTreeRoot(signedBlock.message));
+          
+              events.emit(NetworkEvent.unknownBlock, {rootHex, peer: peerIdStr});
             // ALREADY_KNOWN should not happen with ignoreIfKnown=true above
             // PARENT_UNKNOWN should not happen, we handled this in validateBeaconBlock() function above
             case BlockErrorCode.ALREADY_KNOWN:
@@ -312,7 +320,13 @@ function getDefaultHandlers(modules: ValidatorFnsModules, options: GossipHandler
       }
       const blockInput = await validateBeaconBlob(signedBlob, serializedData, topic.index, peerIdStr, seenTimestampSec);
       if (blockInput !== null) {
-        handleValidBeaconBlock(blockInput, peerIdStr, seenTimestampSec);
+        // TODO DENEB:
+        //
+        // With blobsPromise the block import would have been attempted with the receipt of the block gossip
+        // and should have resolved the availability promise, however we could track if the block processing
+        // was halted and requeue it
+        //
+        // handleValidBeaconBlock(blockInput, peerIdStr, seenTimestampSec);
       } else {
         // TODO DENEB:
         //

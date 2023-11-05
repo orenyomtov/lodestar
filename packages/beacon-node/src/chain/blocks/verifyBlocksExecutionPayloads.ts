@@ -251,6 +251,8 @@ export async function verifyBlocksExecutionPayload(
     });
   }
 
+  console.log("verified blocks")
+
   return {
     execAborted: null,
     executionStatuses,
