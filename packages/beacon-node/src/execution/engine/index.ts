@@ -31,6 +31,7 @@ export function getExecutionEngineHttp(
   opts: ExecutionEngineHttpOpts,
   modules: ExecutionEngineModules
 ): IExecutionEngine {
+  modules.logger.info("Execution client", {urls: opts.urls.join(", "), count: opts.urls.length});
   const rpc = new JsonRpcHttpClient(opts.urls, {
     ...opts,
     signal: modules.signal,

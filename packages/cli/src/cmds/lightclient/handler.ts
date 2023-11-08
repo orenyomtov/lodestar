@@ -23,6 +23,7 @@ export async function lightclientHandler(args: ILightClientArgs & GlobalArgs): P
   if (!beaconApiUrl) throw new YargsError("must provide beaconApiUrl arg");
   if (!checkpointRoot) throw new YargsError("must provide checkpointRoot arg");
 
+  logger.info("Beacon node", {url: beaconApiUrl});
   const api = getClient({baseUrl: beaconApiUrl}, {config});
   const res = await api.beacon.getGenesis();
   ApiError.assert(res, "Can not fetch genesis data");
